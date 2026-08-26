@@ -36,7 +36,7 @@ import 'package:http/http.dart' as http;
 
 /// Fill this in after registering the OAuth app on huggingface.co.
 /// See README.md → "One-time developer setup" for exact steps.
-const String hfOAuthClientId = 'REPLACE_WITH_YOUR_HF_OAUTH_CLIENT_ID';
+const String hfOAuthClientId = '61436169-b99e-48f6-8b08-3373878e619a';
 
 /// Must exactly match the redirect URI registered on huggingface.co,
 /// and match the intent-filter added in AndroidManifest.xml.
