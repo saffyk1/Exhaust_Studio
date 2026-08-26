@@ -91,6 +91,34 @@ Once connected, set your prompt, negative prompt, CFG scale, steps, and
 optionally enable any of the three LoRAs at your preferred strength, then
 generate.
 
+### Getting good results
+
+AI Regenerate exists to make an exhaust recording sound noticeably cleaner
+and clearer than the local enhance pipeline alone can achieve — it's
+rebuilding the tone, not just filtering it.
+
+- **Start with the default values** (prompt, CFG, steps, denoise) — they're
+  tuned to give a solid result out of the box. Treat everything below as
+  optional tweaking once you've heard the default output.
+- **LoRAs:** three are bundled — Harley Davidson, Super Meteor, and Super
+  Meteor 2. Turn on whichever one (or two, mixed together) matches the
+  exhaust character you're after; leave the rest off. They can be blended
+  at different strengths, so it's worth experimenting with one active at a
+  time first to hear what each one does on its own.
+- **Denoise is the main thing to watch.** It controls how much of the
+  output is your original audio vs. a fresh AI take:
+  - Around the default (~0.4) and up to roughly **0.5–0.6**, you'll get a
+    cleaner/clearer version of your own recording with the timing (revs,
+    gear changes, etc.) staying close to the original.
+  - Push it higher and the output starts to drift from your original
+    timing — the AI takes more creative liberty with when things happen.
+  - At **denoise = 1.0**, it's generating essentially from scratch —
+    expect a completely different audio take, not a cleaned-up version of
+    your recording.
+- CFG scale and steps are fine left at their defaults; adjusting them
+  mostly changes how strictly the output follows the prompt vs. how varied
+  it sounds — worth playing with once you're comfortable with denoise.
+
 ### About Space sleep / restarts
 
 Hugging Face Spaces on the free CPU tier can go idle and need a moment to
