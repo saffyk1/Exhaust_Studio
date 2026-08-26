@@ -22,6 +22,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'waveform_screen.dart';
 import 'dart:async';
 import 'stable_audio_service.dart';
+import 'hf_auth_service.dart';
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -425,11 +426,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   final _sa3UrlCtrl = TextEditingController();
 
-  final _sa3LocalUrlCtrl = TextEditingController();
-
   final _sa3HfUrlCtrl = TextEditingController();
 
-  bool _useLocalBackend = true;
+  String? _hfUsername;
+  bool _hfConnecting = false;
+  String _hfConnectStatus = '';
   Sa3Params _sa3Params = const Sa3Params(
     prompt: _kDefaultSa3Prompt,
     negativePrompt: _kDefaultNegSa3Prompt,
@@ -515,14 +516,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   Future<void> _loadSa3Url() async {
     final prefs = await SharedPreferences.getInstance();
 
-    _sa3LocalUrlCtrl.text =
-        prefs.getString('sa3_local_url') ?? '';
-
     _sa3HfUrlCtrl.text =
         prefs.getString('sa3_hf_url') ?? '';
 
-    _useLocalBackend =
-        prefs.getBool('sa3_use_local') ?? true;
+    _hfUsername =
+        prefs.getString('hf_username');
 
     if (mounted) setState(() {});
   }
@@ -531,19 +529,45 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     final prefs = await SharedPreferences.getInstance();
 
     await prefs.setString(
-      'sa3_local_url',
-      _sa3LocalUrlCtrl.text.trim(),
-    );
-
-    await prefs.setString(
       'sa3_hf_url',
       _sa3HfUrlCtrl.text.trim(),
     );
 
-    await prefs.setBool(
-      'sa3_use_local',
-      _useLocalBackend,
+    if (_hfUsername != null) {
+      await prefs.setString('hf_username', _hfUsername!);
+    }
+  }
+
+  /// Signs the user in with their own Hugging Face account and clones the
+  /// Stable Audio 3 Space into it. See hf_auth_service.dart for the flow.
+  Future<void> _connectHuggingFace() async {
+    setState(() {
+      _hfConnecting = true;
+      _hfConnectStatus = '';
+    });
+
+    final result = await HfAuthService.connectAndClone(
+      onStatus: (s) {
+        if (mounted) setState(() => _hfConnectStatus = s);
+      },
     );
+
+    if (!mounted) return;
+
+    if (result.success) {
+      setState(() {
+        _hfConnecting = false;
+        _hfUsername = result.username;
+        _sa3HfUrlCtrl.text = result.spaceUrl!;
+        _hfConnectStatus = 'Connected as ${result.username}';
+      });
+      await _saveSa3Url('');
+    } else {
+      setState(() {
+        _hfConnecting = false;
+        _hfConnectStatus = result.error ?? 'Connection failed.';
+      });
+    }
   }
 
   // ── Mode switching ─────────────────────────────────────────────────────────
@@ -1834,11 +1858,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _showStatus('Enhance a video first, then run SA3.', isError: true);
       return;
     }
-    final rawUrl = _useLocalBackend
-        ? _sa3LocalUrlCtrl.text.trim()
-        : _sa3HfUrlCtrl.text.trim();
+    final rawUrl = _sa3HfUrlCtrl.text.trim();
     if (rawUrl.isEmpty) {
-      _showStatus('Paste your Colab ngrok URL first.', isError: true);
+      _showStatus('Connect your Hugging Face account first (AI Regenerate panel).', isError: true);
       return;
     }
     final baseUrl = rawUrl.endsWith('/') ? rawUrl.substring(0, rawUrl.length - 1) : rawUrl;
@@ -2047,158 +2069,83 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       if (_sa3PanelOpen) ...[
         const SizedBox(height: 16),
 
-        // ── Cloudflare URL ────────────────────────────────────────────────
-        _buildGroupLabel('LOCAL COMFYUI URL'),
-        const SizedBox(height: 6),
-
-        TextField(
-          controller: _sa3LocalUrlCtrl,
-          style: const TextStyle(
-            fontFamily: 'monospace',
-            fontSize: 11,
-            color: Color(0xFFE8E8E8),
-          ),
-          decoration: InputDecoration(
-            hintText: 'http://100.x.x.x:8188',
-            filled: true,
-            fillColor: const Color(0xFF1A1A1A),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(4),
-            ),
-            suffixIcon: IconButton(
-              icon: const Icon(Icons.close, size: 16),
-              onPressed: () async {
-                _sa3LocalUrlCtrl.clear();
-                await _saveSa3Url('');
-                setState(() {});
-              },
-            ),
-          ),
-          onChanged: (_) async {
-            await _saveSa3Url('');
-            setState(() {});
-          },
-        ),
-
+        // ── Hugging Face connection ──────────────────────────────────────
+        _buildGroupLabel('HUGGING FACE'),
         const SizedBox(height: 8),
 
-        Align(
-          alignment: Alignment.centerRight,
-          child: OutlinedButton(
-            onPressed: () async {
-              final clip =
-              await Clipboard.getData(Clipboard.kTextPlain);
-
-              if (clip?.text != null) {
-                _sa3LocalUrlCtrl.text = clip!.text!.trim();
-
-                await _saveSa3Url('');
-
-                setState(() {});
-              }
-            },
-            child: const Text('PASTE'),
-          ),
-        ),
-
-        const SizedBox(height: 20),
-
-        _buildGroupLabel('HUGGING FACE URL'),
-        const SizedBox(height: 6),
-
-        TextField(
-          controller: _sa3HfUrlCtrl,
-          style: const TextStyle(
-            fontFamily: 'monospace',
-            fontSize: 11,
-            color: Color(0xFFE8E8E8),
-          ),
-          decoration: InputDecoration(
-            hintText: 'https://your-space.hf.space',
-            filled: true,
-            fillColor: const Color(0xFF1A1A1A),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(4),
-            ),
-            suffixIcon: IconButton(
-              icon: const Icon(Icons.close, size: 16),
-              onPressed: () async {
-                _sa3HfUrlCtrl.clear();
-
-                await _saveSa3Url('');
-
-                setState(() {});
-              },
-            ),
-          ),
-          onChanged: (_) async {
-            await _saveSa3Url('');
-
-            setState(() {});
-          },
-        ),
-
-        const SizedBox(height: 8),
-
-        Align(
-          alignment: Alignment.centerRight,
-          child: OutlinedButton(
-            onPressed: () async {
-              final clip =
-              await Clipboard.getData(Clipboard.kTextPlain);
-
-              if (clip?.text != null) {
-                _sa3HfUrlCtrl.text = clip!.text!.trim();
-
-                await _saveSa3Url('');
-
-                setState(() {});
-              }
-            },
-            child: const Text('PASTE'),
-          ),
-        ),
-
-        const SizedBox(height: 20),
-
-        _buildGroupLabel('AI BACKEND'),
-        const SizedBox(height: 8),
-
-        RadioListTile<bool>(
-          value: true,
-          groupValue: _useLocalBackend,
-          activeColor: const Color(0xFFFF6B00),
-          title: const Text(
-            'LOCAL PC (TAILSCALE)',
+        if (_hfUsername == null || _sa3HfUrlCtrl.text.trim().isEmpty) ...[
+          const Text(
+            'Sign in with your own free Hugging Face account. We\'ll clone '
+            'our Stable Audio 3 Space into your account so generation runs '
+            'on your own quota, not ours.',
             style: TextStyle(
               fontFamily: 'monospace',
-              fontSize: 11,
-              color: Color(0xFFE8E8E8),
+              fontSize: 10,
+              height: 1.5,
+              color: Color(0xFF888888),
             ),
           ),
-          onChanged: (v) async {
-            setState(() => _useLocalBackend = true);
-            await _saveSa3Url('');
-          },
-        ),
-
-        RadioListTile<bool>(
-          value: false,
-          groupValue: _useLocalBackend,
-          activeColor: const Color(0xFFFF6B00),
-          title: const Text(
-            'HUGGING FACE',
-            style: TextStyle(
-              fontFamily: 'monospace',
-              fontSize: 11,
-              color: Color(0xFFE8E8E8),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _hfConnecting ? null : _connectHuggingFace,
+              icon: _hfConnecting
+                  ? const SizedBox(
+                      width: 14, height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black),
+                    )
+                  : const Icon(Icons.link, size: 16),
+              label: Text(_hfConnecting ? 'CONNECTING…' : 'CONNECT HUGGING FACE ACCOUNT'),
             ),
           ),
-          onChanged: (v) async {
-            setState(() => _useLocalBackend = false);
-            await _saveSa3Url('');
-          },
-        ),
+          if (_hfConnectStatus.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              _hfConnectStatus,
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 10,
+                color: Color(0xFFFF6B00),
+              ),
+            ),
+          ],
+        ] else ...[
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1A1A),
+              border: Border.all(color: const Color(0xFF2A2A2A)),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Row(children: [
+              const Icon(Icons.check_circle, color: Color(0xFFFF6B00), size: 15),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Connected as $_hfUsername\n${_sa3HfUrlCtrl.text.trim()}',
+                  style: const TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 10,
+                    color: Color(0xFFCCCCCC),
+                  ),
+                ),
+              ),
+              GestureDetector(
+                onTap: _hfConnecting ? null : _connectHuggingFace,
+                child: const Text('RECONNECT',
+                    style: TextStyle(fontFamily: 'monospace', fontSize: 9,
+                        color: Color(0xFF666666), decoration: TextDecoration.underline)),
+              ),
+            ]),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Note: if this Space hasn\'t been used in a few days it may need '
+            'a moment to restart on the next request — that\'s normal.',
+            style: TextStyle(fontFamily: 'monospace', fontSize: 9, color: Color(0xFF555555)),
+          ),
+        ],
 
         const SizedBox(height: 12),
 
