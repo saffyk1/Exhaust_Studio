@@ -21,15 +21,17 @@ below.
 
 ## Features
 
-**Local enhance (always available, offline):**
+**Local enhance (always available, offline, no account needed):**
 - High-pass / low-pass filtering to strip wind buffet, chassis rumble, tyre
   hiss, and valve tick.
-- Two parametric EQ bands (mid-bass body, engine bark/firing snap) plus
-  fixed reference bands for tuning by ear.
+- Two adjustable parametric EQ bands (mid-bass body, engine bark/firing
+  snap) plus fixed reference bands for tuning by ear.
 - Broadcast-density compressor and a true-peak limiter.
-- Built-in presets, plus save/load your own.
+- Built-in presets (Default, Track Day, Deep Rumble, Street Cruise, Wet
+  Road, Race Mode), plus save/load your own custom presets.
+- Trim your source clip before processing.
 
-**AI Regenerate (optional, needs a Hugging Face account):**
+**AI Regenerate (optional, needs a free Hugging Face account):**
 - Runs your enhanced audio through a Stable Audio 3 ComfyUI pipeline to
   regenerate the exhaust note from a text prompt + your own audio as a
   conditioning reference (denoise-controlled, so you dial in how much of
@@ -37,6 +39,32 @@ below.
 - Three bundled LoRAs (Harley Davidson, Super Meteor, Super Meteor 2) you
   can mix in at adjustable strength.
 - Full control over prompt, negative prompt, CFG scale, steps, and seed.
+
+## How the app works, step by step
+
+1. **Upload a ride video.** Tap the empty video area to pick a clip from
+   your gallery.
+2. **Trim (optional).** As soon as a video loads, a TRIM range slider
+   appears below it — drag the in/out handles to select just the section
+   you want, then tap **LOCK TRIM** to commit (or leave it untrimmed to
+   use the whole clip).
+3. **Choose a tuning profile.** Switch between:
+   - **Presets** — pick one of the six built-in profiles above, or one you
+     saved yourself.
+   - **Manual** — dial in every parametric EQ band, the compressor, and
+     limiter yourself.
+   The **Pipeline** readout below always shows exactly what each stage
+   (HPF → LPF → EQ → EQ → Compressor → Volume → Limiter) is currently set
+   to do, in order.
+4. **Tap Enhance & Save to Gallery.** This runs the whole chain locally
+   through FFmpeg — no upload, no account, no internet needed for this
+   step. Once done, an ORIGINAL / ENHANCED toggle appears so you can A/B
+   the result, with a scrubbable preview.
+5. **(Optional) AI Regenerate.** Open the "AI Regenerate · SA3" panel
+   below the Enhance button — see the next section for how this works and
+   what it needs.
+6. **Save or discard.** Save the final video to your gallery, or discard
+   and start over.
 
 ## How the AI Regenerate mode works
 
@@ -47,17 +75,21 @@ Hugging Face Account** inside the AI Regenerate panel and the app will:
    sees or stores your password).
 2. **Clone our Stable Audio 3 Space into your own Hugging Face account**
    (`your-username/exhaust-studio-audio`, private by default). This is a
-   direct copy of the exact Space this app was built and tested against.
+   direct copy of the exact Space this app was built and tested against —
+   it never touches or reuses our account or compute after this one-time
+   copy step.
 3. Wait for your copy to build and start — this is a Docker build that
    pulls in ComfyUI and the model weights, so **the first run typically
    takes a few minutes**. Every run after that is fast, since the Space
    stays built.
-4. Save the resulting Space URL on your device so future generations go
-   straight to your own Space, on your own free Hugging Face compute quota
-   — not shared with other users of this app.
+4. The app automatically saves the resulting Space URL on your device —
+   there's nothing to copy or paste yourself. Every generation after that
+   goes straight to your own Space, on your own free Hugging Face compute
+   quota, not shared with other users of this app.
 
-You can also skip the automated flow and paste in the URL of any
-Stable-Audio-3-compatible ComfyUI Space you already run yourself.
+Once connected, set your prompt, negative prompt, CFG scale, steps, and
+optionally enable any of the three LoRAs at your preferred strength, then
+generate.
 
 ### About Space sleep / restarts
 
@@ -76,24 +108,27 @@ This is a property of free Hugging Face Space hosting, not a bug in the
 app — your own private clone stays yours regardless of how long it's been
 idle, it just needs to "wake up" again.
 
-## One-time developer setup (only needed if you fork/build this yourself)
+## One-time developer setup (only needed if you fork this yourself)
 
-The auto-clone flow needs a Hugging Face OAuth application registered
-once, by the app's developer — **end users never do this step**, they only
-sign in with their own existing HF account.
+Already done for this repo — the HF OAuth Client ID is already wired into
+`exhaust_studio/lib/hf_auth_service.dart`, so end users can just tap
+Connect and go. This section is only relevant if you fork the project and
+want to host your own source Space instead of `saifvj/stable-audio-api`.
 
 1. Go to https://huggingface.co/settings/applications/new while logged in
-   as the account that owns the source Space (`saifvj/stable-audio-api`).
+   as the account that owns your source Space (this URL works even though
+   it isn't linked from the Settings sidebar).
 2. Set:
    - **Redirect URI:** `exhauststudio://callback`
    - **Scopes:** `read-repos`, `write-repos`
-3. Copy the generated **Client ID**.
-4. Paste it into `exhaust_studio/lib/hf_auth_service.dart`, replacing
-   `REPLACE_WITH_YOUR_HF_OAUTH_CLIENT_ID`.
+   - Token expiration of 8 hours is fine — the app only uses the token
+     briefly during the connect flow, then discards it.
+3. Copy the generated **Client ID** (this is safe to be public — it's not
+   a secret, just an app identifier).
+4. Paste it into `hfOAuthClientId` in
+   `exhaust_studio/lib/hf_auth_service.dart`, and update `hfSourceSpace` to
+   point at your own Space.
 5. Rebuild the app.
-
-If you fork this project to host your own source Space instead of
-`saifvj/stable-audio-api`, update `hfSourceSpace` in the same file.
 
 ## Building the app
 
