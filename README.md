@@ -93,9 +93,11 @@ generate.
 
 ### Getting good results
 
-AI Regenerate exists to make an exhaust recording sound noticeably cleaner
-and clearer than the local enhance pipeline alone can achieve — it's
-rebuilding the tone, not just filtering it.
+AI Regenerate exists to **recreate** your exhaust note using an AI audio
+model, not to clean up the original recording — that's what the local
+Enhance pipeline is for. Think of it as generating a new take on your
+exhaust's sound, using your recording as a reference, rather than
+filtering/polishing the original audio.
 
 - **Start with the default values** (prompt, CFG, steps, denoise) — they're
   tuned to give a solid result out of the box. Treat everything below as
@@ -107,9 +109,9 @@ rebuilding the tone, not just filtering it.
   time first to hear what each one does on its own.
 - **Denoise is the main thing to watch.** It controls how much of the
   output is your original audio vs. a fresh AI take:
-  - Around the default (~0.4) and up to roughly **0.5–0.6**, you'll get a
-    cleaner/clearer version of your own recording with the timing (revs,
-    gear changes, etc.) staying close to the original.
+  - Around the default (~0.4) and up to roughly **0.5–0.6**, the recreated
+    audio stays closely guided by your original — the timing (revs, gear
+    changes, etc.) stays close to what you recorded.
   - Push it higher and the output starts to drift from your original
     timing — the AI takes more creative liberty with when things happen.
   - At **denoise = 1.0**, it's generating essentially from scratch —
