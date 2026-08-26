@@ -14,10 +14,9 @@ below.
 
 ## What's in this repo
 
-- `exhaust_studio/` — the Flutter/Android app.
-- `artifacts/` — a web-based UI mockup/reference (not the shipped app).
-- `lib/`, `scripts/` — supporting API client / build scaffolding for a
-  planned backend service; not required to run the app itself.
+- `exhaust_studio/` — the entire Flutter/Android app. This is the whole
+  project; nothing else in the repo is needed to build or run it.
+- `README.md`, `LICENSE` — this file and the Apache 2.0 license.
 
 ## Features
 
@@ -162,8 +161,20 @@ want to host your own source Space instead of `saifvj/stable-audio-api`.
 
 ## Building the app
 
-Requires the Flutter SDK (see `exhaust_studio/pubspec.yaml` for the SDK
-constraint).
+**Prerequisites:**
+- [Flutter SDK](https://docs.flutter.dev/get-started/install) — Dart SDK
+  `>=3.7.0 <4.0.0` (see `exhaust_studio/pubspec.yaml`)
+- Android SDK with `compileSdk 36`, `minSdk 24`, `targetSdk 35`, and NDK
+  `28.2.13676358` (Android Studio installs these automatically when you
+  open the project — no manual setup needed if you're building from
+  Android Studio)
+- JDK 17
+
+There's no `requirements.txt` here — this is a Dart/Flutter project, not
+Python. `exhaust_studio/pubspec.yaml` and `pubspec.lock` are the
+equivalent: they list every package dependency and their exact resolved
+versions. `flutter pub get` (below) installs them, the same role
+`pip install -r requirements.txt` plays for a Python project.
 
 ```
 cd exhaust_studio
@@ -172,7 +183,9 @@ flutter build apk --release
 ```
 
 The signed release APK is produced at
-`exhaust_studio/build/app/outputs/flutter-apk/app-release.apk`.
+`exhaust_studio/build/app/outputs/flutter-apk/app-release.apk`. Expect it
+to be 200MB+ — that's normal, `ffmpeg_kit_flutter_new` bundles full FFmpeg
+native libraries for every Android CPU architecture.
 
 ### Installing the APK
 
