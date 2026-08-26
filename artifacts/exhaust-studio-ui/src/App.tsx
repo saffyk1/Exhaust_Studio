@@ -5,6 +5,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 // ─────────────────────────────────────────────────────────────────────────────
 type TuningMode = "manual" | "presets";
 type AudioMode  = "original" | "enhanced";
+type RecordState = "idle" | "recording" | "done";
 
 interface FilterParams {
   hpfHz: number; lpfHz: number;
@@ -57,11 +58,7 @@ const C = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Audio engine — built once, persists for the session
-// NC nodes are always in the enhanced chain; gain=0 when NC is off.
-// Analyser sits at the tail of every chain so FFT sees the final signal.
-// The canvas that draws FFT is a pure visual overlay — not part of any
-// MediaRecorder capture or downloaded file.
+// Audio engine
 // ─────────────────────────────────────────────────────────────────────────────
 interface AudioEngine {
   ctx:       AudioContext;
@@ -73,8 +70,8 @@ interface AudioEngine {
   comp:      DynamicsCompressorNode;
   vol:       GainNode;
   lim:       DynamicsCompressorNode;
-  ncLoShelf: BiquadFilterNode;   // targets sub-bass road rumble (<80Hz)
-  ncHiShelf: BiquadFilterNode;   // targets wind/hiss above exhaust range (>6500Hz)
+  ncLoShelf: BiquadFilterNode;
+  ncHiShelf: BiquadFilterNode;
   analyser:  AnalyserNode;
 }
 
@@ -86,10 +83,8 @@ function buildEngine(ctx: AudioContext, source: MediaElementAudioSourceNode): Au
   const comp = ctx.createDynamicsCompressor(); comp.attack.value = 0.005; comp.release.value = 0.05; comp.knee.value = 6;
   const vol  = ctx.createGain();
   const lim  = ctx.createDynamicsCompressor(); lim.ratio.value = 20; lim.attack.value = 0.001; lim.release.value = 0.05; lim.knee.value = 0;
-  // NC nodes — gain=0 means transparent (passthrough)
   const ncLoShelf = ctx.createBiquadFilter(); ncLoShelf.type = "lowshelf";  ncLoShelf.frequency.value = 80;   ncLoShelf.gain.value = 0;
   const ncHiShelf = ctx.createBiquadFilter(); ncHiShelf.type = "highshelf"; ncHiShelf.frequency.value = 6500; ncHiShelf.gain.value = 0;
-  // Analyser for FFT — smoothed, 512-point
   const analyser = ctx.createAnalyser(); analyser.fftSize = 512; analyser.smoothingTimeConstant = 0.82;
   return { ctx, source, hpf, lpf, eq1, eq2, comp, vol, lim, ncLoShelf, ncHiShelf, analyser };
 }
@@ -118,7 +113,6 @@ function disconnectAll(e: AudioEngine) {
 
 function connectOriginal(e: AudioEngine) {
   disconnectAll(e);
-  // original path: source → analyser → out (FFT still works, no processing)
   e.source.connect(e.analyser);
   e.analyser.connect(e.ctx.destination);
 }
@@ -127,8 +121,6 @@ function connectEnhanced(e: AudioEngine, p: FilterParams, ncLevel: number, ncOrd
   disconnectAll(e);
   applyParams(e, p);
   applyNC(e, ncLevel);
-  // NC before tuning:  source → ncLo → ncHi → hpf → lpf → eq1 → eq2 → comp → vol → lim → analyser → out
-  // NC after tuning:   source → hpf → lpf → eq1 → eq2 → comp → vol → lim → ncLo → ncHi → analyser → out
   if (ncOrder === "before") {
     e.source.connect(e.ncLoShelf);
     e.ncLoShelf.connect(e.ncHiShelf);
@@ -161,6 +153,7 @@ export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<AudioEngine | null>(null);
   const rafRef    = useRef<number>(0);
+  const recorderRef = useRef<MediaRecorder | null>(null);
 
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [playing,  setPlaying]  = useState(false);
@@ -177,11 +170,14 @@ export default function App() {
   });
   const [saveName,      setSaveName]      = useState("");
   const [showSaveInput, setShowSaveInput] = useState(false);
-  const [showSaveSheet, setShowSaveSheet] = useState(false);
 
-  // Noise cancellation: 0 = off, 1–100 = active; order controls chain position
   const [ncLevel, setNcLevel] = useState(0);
   const [ncOrder, setNcOrder] = useState<"before" | "after">("before");
+
+  // Recording / export state
+  const [recordState,    setRecordState]    = useState<RecordState>("idle");
+  const [recordProgress, setRecordProgress] = useState(0);
+  const [recordError,    setRecordError]    = useState<string | null>(null);
 
   // ── Audio engine init ──────────────────────────────────────────────────────
   const initEngine = useCallback(() => {
@@ -200,7 +196,7 @@ export default function App() {
     applyParams(e, params);
   }, [params, audioMode]);
 
-  // ── Sync NC live (level update only) ──────────────────────────────────────
+  // ── Sync NC live ──────────────────────────────────────────────────────────
   useEffect(() => {
     const e = engineRef.current;
     if (!e || audioMode !== "enhanced") return;
@@ -214,7 +210,7 @@ export default function App() {
     connectEnhanced(e, params, ncLevel, ncOrder);
   }, [ncOrder]);
 
-  // ── FFT animation loop — canvas overlay only, no impact on audio/video ────
+  // ── FFT animation loop ─────────────────────────────────────────────────────
   useEffect(() => {
     const e      = engineRef.current;
     const canvas = canvasRef.current;
@@ -228,10 +224,8 @@ export default function App() {
       e!.analyser.getByteFrequencyData(data);
       const W = canvas!.width; const H = canvas!.height;
       ctx2d.clearRect(0, 0, W, H);
-
-      const barCount = Math.floor(data.length / 2); // use lower half (more musical)
+      const barCount = Math.floor(data.length / 2);
       const barW = W / barCount - 0.5;
-
       for (let i = 0; i < barCount; i++) {
         const amp = data[i] / 255;
         const h   = amp * H * 0.9;
@@ -253,6 +247,17 @@ export default function App() {
     return () => { cancelAnimationFrame(rafRef.current); ctx2d.clearRect(0, 0, canvas.width, canvas.height); };
   }, [playing, audioMode]);
 
+  // ── Track record progress ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (recordState !== "recording") return;
+    const interval = setInterval(() => {
+      const v = videoRef.current;
+      if (!v || !v.duration) return;
+      setRecordProgress(v.currentTime / v.duration);
+    }, 200);
+    return () => clearInterval(interval);
+  }, [recordState]);
+
   // ── Mode switch ────────────────────────────────────────────────────────────
   function switchAudioMode(mode: AudioMode) {
     setAudioMode(mode);
@@ -264,6 +269,7 @@ export default function App() {
 
   // ── Video ──────────────────────────────────────────────────────────────────
   function togglePlay() {
+    if (recordState === "recording") return;
     const v = videoRef.current;
     if (!v) return;
     initEngine();
@@ -277,7 +283,108 @@ export default function App() {
     if (!f) return;
     setVideoUrl(URL.createObjectURL(f));
     setPlaying(false); setPosition(0);
+    setRecordState("idle"); setRecordProgress(0); setRecordError(null);
     if (fileRef.current) fileRef.current.value = "";
+  }
+
+  // ── Save to gallery — real MediaRecorder export ────────────────────────────
+  async function saveToGallery() {
+    const video = videoRef.current;
+    if (!video) return;
+    setRecordError(null);
+
+    // Initialise engine if first interaction
+    if (!engineRef.current) {
+      initEngine();
+      await new Promise(r => setTimeout(r, 50));
+    }
+    const engine = engineRef.current!;
+    if (engine.ctx.state === "suspended") await engine.ctx.resume();
+
+    // Switch to enhanced so we capture the processed audio
+    if (audioMode !== "enhanced") switchAudioMode("enhanced");
+
+    // Tap processed audio stream from the analyser output
+    const dest = engine.ctx.createMediaStreamDestination();
+    engine.analyser.connect(dest);
+
+    // Grab video+audio tracks from the <video> element
+    type CaptureStream = { captureStream(): MediaStream };
+    const rawStream = (video as unknown as CaptureStream).captureStream();
+    const videoTracks = rawStream.getVideoTracks();
+
+    if (videoTracks.length === 0) {
+      engine.analyser.disconnect(dest);
+      setRecordError("This browser can't capture the video stream. Try Chrome or Edge on Android.");
+      return;
+    }
+
+    const combined = new MediaStream([...videoTracks, ...dest.stream.getAudioTracks()]);
+
+    const mimeType =
+      MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus") ? "video/webm;codecs=vp9,opus" :
+      MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus") ? "video/webm;codecs=vp8,opus" :
+      "video/webm";
+
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(combined, { mimeType });
+    } catch {
+      engine.analyser.disconnect(dest);
+      setRecordError("MediaRecorder not supported in this browser. Try Chrome on Android.");
+      return;
+    }
+    recorderRef.current = recorder;
+
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+
+    recorder.onstop = () => {
+      engine.analyser.disconnect(dest);
+      recorderRef.current = null;
+
+      const blob = new Blob(chunks, { type: mimeType });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = "exhaust-enhanced.webm";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+
+      video.loop = true;
+      setRecordState("done");
+      setRecordProgress(1);
+      setPlaying(false);
+    };
+
+    // Seek to start, disable loop so we get an "ended" event
+    video.loop = false;
+    video.currentTime = 0;
+    setRecordState("recording");
+    setRecordProgress(0);
+
+    await video.play();
+    setPlaying(true);
+
+    recorder.start(200);
+
+    video.addEventListener("ended", function onEnded() {
+      video.removeEventListener("ended", onEnded);
+      if (recorder.state !== "inactive") recorder.stop();
+    }, { once: true });
+  }
+
+  function cancelRecording() {
+    const video = videoRef.current;
+    if (recorderRef.current && recorderRef.current.state !== "inactive") {
+      recorderRef.current.stop();
+    }
+    if (video) { video.pause(); video.loop = true; }
+    setRecordState("idle");
+    setRecordProgress(0);
+    setPlaying(false);
   }
 
   // ── Tuning ─────────────────────────────────────────────────────────────────
@@ -345,8 +452,7 @@ export default function App() {
 
         {/* ── VIDEO PLAYER ── */}
         {!videoUrl ? (
-          <div onClick={() => fileRef.current?.click()}
-            style={{ aspectRatio: "16/9", background: C.surface, border: `1.5px dashed ${C.dim}`, borderRadius: 8, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", marginBottom: 20, gap: 14 }}>
+          <label htmlFor="videoFileInput" style={{ aspectRatio: "16/9", background: C.surface, border: `1.5px dashed ${C.dim}`, borderRadius: 8, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", marginBottom: 20, gap: 14 }}>
             <div style={{ width: 64, height: 64, borderRadius: "50%", border: `1.5px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
               <span style={{ fontSize: 28, color: C.mid }}>+</span>
             </div>
@@ -354,56 +460,85 @@ export default function App() {
               <div style={{ fontSize: 13, color: C.mid, letterSpacing: 1.2 }}>Upload Ride Video</div>
               <div style={{ fontSize: 11, color: C.dim, marginTop: 5 }}>tap to select from gallery</div>
             </div>
-          </div>
+          </label>
         ) : (
           <div style={{ marginBottom: 20 }}>
-            {/* Video container */}
             <div style={{ position: "relative", aspectRatio: "16/9", background: "#000", borderRadius: "8px 8px 0 0", overflow: "hidden" }}>
               <video ref={videoRef} src={videoUrl} loop style={{ width: "100%", height: "100%", objectFit: "cover" }}
                 onTimeUpdate={e => setPosition((e.target as HTMLVideoElement).currentTime)}
                 onLoadedMetadata={e => setDuration((e.target as HTMLVideoElement).duration)}
                 onEnded={() => setPlaying(false)} />
 
-              {/* FFT canvas — purely visual overlay, pointer-events none so clicks pass through.
-                  This canvas is never captured by any recorder or download. */}
               <canvas ref={canvasRef} width={512} height={80}
                 style={{ position: "absolute", bottom: 0, left: 0, right: 0, width: "100%", height: 80, pointerEvents: "none", opacity: playing ? 1 : 0, transition: "opacity 0.3s" }} />
 
-              {/* Play overlay */}
-              <div onClick={togglePlay} style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
-                {!playing && (
-                  <div style={{ width: 60, height: 60, borderRadius: "50%", background: "rgba(0,0,0,0.65)", border: `2px solid ${C.orange}88`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <span style={{ fontSize: 26, color: C.orange, marginLeft: 4 }}>▶</span>
+              {/* Recording overlay */}
+              {recordState === "recording" && (
+                <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#FF3333", animation: "pulse 1s infinite" }} />
+                  <div style={{ fontSize: 11, color: "#FFF", fontFamily: "monospace", letterSpacing: 1.5 }}>RECORDING…</div>
+                  <div style={{ width: "70%", height: 4, background: "#222", borderRadius: 2, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${recordProgress * 100}%`, background: C.orange, borderRadius: 2, transition: "width 0.2s linear" }} />
                   </div>
-                )}
-              </div>
+                  <div style={{ fontSize: 10, color: "#AAA", fontFamily: "monospace" }}>{fmt(position)} / {fmt(duration)}</div>
+                  <button onClick={cancelRecording}
+                    style={{ padding: "6px 18px", background: "transparent", border: "1px solid #555", borderRadius: 4, color: "#888", fontFamily: "monospace", fontSize: 10, cursor: "pointer" }}>
+                    CANCEL
+                  </button>
+                </div>
+              )}
 
-              {/* Replace */}
-              <button onClick={e => { e.stopPropagation(); fileRef.current?.click(); }}
-                style={{ position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,0.7)", border: `1px solid ${C.border}`, borderRadius: 3, padding: "3px 8px", fontSize: 10, color: "#AAA", fontFamily: "monospace", letterSpacing: 1, cursor: "pointer", zIndex: 2 }}>REPLACE</button>
+              {/* Play overlay — hidden while recording */}
+              {recordState !== "recording" && (
+                <div onClick={togglePlay} style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+                  {!playing && (
+                    <div style={{ width: 60, height: 60, borderRadius: "50%", background: "rgba(0,0,0,0.65)", border: `2px solid ${C.orange}88`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <span style={{ fontSize: 26, color: C.orange, marginLeft: 4 }}>▶</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Replace button — label ensures mobile browsers open the picker reliably */}
+              {recordState !== "recording" && (
+                <label htmlFor="videoFileInput"
+                  style={{ position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,0.7)", border: `1px solid ${C.border}`, borderRadius: 3, padding: "3px 8px", fontSize: 10, color: "#AAA", fontFamily: "monospace", letterSpacing: 1, cursor: "pointer", zIndex: 2 }}>REPLACE</label>
+              )}
 
               {/* ORIGINAL / ENHANCED toggle */}
-              <div style={{ position: "absolute", top: 8, left: 8, display: "flex", gap: 1, zIndex: 2 }}>
-                <div style={{ padding: "3px 8px", background: audioMode === "original" ? "#fff" : "rgba(0,0,0,0.6)", borderRadius: "3px 0 0 3px", fontSize: 9, fontFamily: "monospace", fontWeight: 700, letterSpacing: 1, color: audioMode === "original" ? "#000" : "#555", cursor: "pointer" }}
-                  onClick={() => switchAudioMode("original")}>ORIGINAL</div>
-                <div style={{ padding: "3px 8px", background: audioMode === "enhanced" ? C.orange : "rgba(0,0,0,0.6)", borderRadius: "0 3px 3px 0", fontSize: 9, fontFamily: "monospace", fontWeight: 700, letterSpacing: 1, color: audioMode === "enhanced" ? "#000" : "#555", cursor: "pointer" }}
-                  onClick={() => switchAudioMode("enhanced")}>ENHANCED ▲</div>
-              </div>
+              {recordState !== "recording" && (
+                <div style={{ position: "absolute", top: 8, left: 8, display: "flex", gap: 1, zIndex: 2 }}>
+                  <div style={{ padding: "3px 8px", background: audioMode === "original" ? "#fff" : "rgba(0,0,0,0.6)", borderRadius: "3px 0 0 3px", fontSize: 9, fontFamily: "monospace", fontWeight: 700, letterSpacing: 1, color: audioMode === "original" ? "#000" : "#555", cursor: "pointer" }}
+                    onClick={() => switchAudioMode("original")}>ORIGINAL</div>
+                  <div style={{ padding: "3px 8px", background: audioMode === "enhanced" ? C.orange : "rgba(0,0,0,0.6)", borderRadius: "0 3px 3px 0", fontSize: 9, fontFamily: "monospace", fontWeight: 700, letterSpacing: 1, color: audioMode === "enhanced" ? "#000" : "#555", cursor: "pointer" }}
+                    onClick={() => switchAudioMode("enhanced")}>ENHANCED ▲</div>
+                </div>
+              )}
             </div>
 
             {/* Seek bar */}
             <div style={{ background: "#080808", borderRadius: "0 0 8px 8px", padding: "8px 14px 10px" }}>
               <input type="range" min={0} max={duration || 100} step={0.05} value={position}
-                onChange={e => { const v = videoRef.current; if (v) v.currentTime = +e.target.value; setPosition(+e.target.value); }}
-                style={{ width: "100%", accentColor: C.orange, cursor: "pointer", display: "block", marginBottom: 4 }} />
+                onChange={e => { if (recordState === "recording") return; const v = videoRef.current; if (v) v.currentTime = +e.target.value; setPosition(+e.target.value); }}
+                style={{ width: "100%", accentColor: C.orange, cursor: recordState === "recording" ? "default" : "pointer", display: "block", marginBottom: 4 }} />
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <span style={{ fontSize: 10, color: "#444", fontFamily: "monospace" }}>{fmt(position)}</span>
                 <span style={{ fontSize: 10, color: "#444", fontFamily: "monospace" }}>{fmt(duration)}</span>
               </div>
             </div>
 
-            {/* Hint */}
-            {audioMode === "original" ? (
+            {/* Hint / status */}
+            {recordState === "done" ? (
+              <div style={{ marginTop: 10, padding: "8px 12px", background: "rgba(0,230,118,0.06)", border: `1px solid ${C.green}44`, borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 13 }}>✅</span>
+                <span style={{ fontSize: 10, color: C.green }}>Download started — find the file in your Downloads or Files app.</span>
+              </div>
+            ) : recordError ? (
+              <div style={{ marginTop: 10, padding: "8px 12px", background: "rgba(255,60,60,0.06)", border: "1px solid #FF3C3C44", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 13 }}>⚠️</span>
+                <span style={{ fontSize: 10, color: "#FF6666" }}>{recordError}</span>
+              </div>
+            ) : audioMode === "original" ? (
               <div style={{ marginTop: 10, padding: "8px 12px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
                 <span style={{ fontSize: 13 }}>👂</span>
                 <span style={{ fontSize: 10, color: C.mid }}>Original audio. Tap <b style={{ color: C.orange }}>ENHANCED ▲</b> to compare.</span>
@@ -417,13 +552,11 @@ export default function App() {
           </div>
         )}
 
-        <input ref={fileRef} type="file" accept="video/*" style={{ display: "none" }} onChange={pickVideo} />
+        <input ref={fileRef} id="videoFileInput" type="file" accept="video/*" style={{ display: "none" }} onChange={pickVideo} />
 
         {/* ── NOISE CANCELLATION ── */}
         <SectionLabel label="NOISE CANCELLATION" />
         <div style={{ marginTop: 14, background: C.surface, border: `1px solid ${ncLevel > 0 ? C.orange + "55" : C.border}`, borderRadius: 8, padding: "14px 16px", transition: "border-color 0.2s" }}>
-
-          {/* Level row */}
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
             <button onClick={() => setNcLevel(0)}
               style={{ padding: "5px 12px", borderRadius: 4, border: `1px solid ${ncLevel === 0 ? "#666" : C.border}`, background: ncLevel === 0 ? "#2A2A2A" : "transparent", color: ncLevel === 0 ? "#CCC" : C.mid, fontFamily: "monospace", fontSize: 10, fontWeight: 700, letterSpacing: 1.5, cursor: "pointer", flexShrink: 0 }}>OFF</button>
@@ -433,7 +566,6 @@ export default function App() {
             <span style={{ fontSize: 13, fontWeight: 700, color: ncLevel > 0 ? C.orange : C.mid, fontFamily: "monospace", minWidth: 32, textAlign: "right" }}>{ncLevel > 0 ? ncLevel : "—"}</span>
           </div>
 
-          {/* Sequence toggle */}
           <div style={{ display: "flex", background: "#0A0A0A", border: `1px solid ${C.border}`, borderRadius: 5, padding: 2, marginBottom: 12, gap: 2 }}>
             {(["before", "after"] as const).map(o => (
               <button key={o} onClick={() => setNcOrder(o)}
@@ -468,7 +600,6 @@ export default function App() {
         {/* ── TUNING PROFILE ── */}
         <SectionLabel label="TUNING PROFILE" />
         <div style={{ marginTop: 14 }}>
-          {/* Tab switcher */}
           <div style={{ display: "flex", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: 3, marginBottom: 20, gap: 3 }}>
             {(["presets", "manual"] as TuningMode[]).map(mode => (
               <button key={mode} onClick={mode === "manual" ? switchToManual : switchToPresets}
@@ -480,7 +611,6 @@ export default function App() {
             ))}
           </div>
 
-          {/* PRESETS panel */}
           {tuningMode === "presets" && (
             <div>
               <div style={{ fontSize: 9, color: C.mid, letterSpacing: 1.5, marginBottom: 12 }}>BUILT-IN</div>
@@ -517,7 +647,6 @@ export default function App() {
             </div>
           )}
 
-          {/* MANUAL panel */}
           {tuningMode === "manual" && (
             <div>
               <div style={{ fontSize: 9, color: C.mid, letterSpacing: 1.5, marginBottom: 16 }}>
@@ -560,7 +689,6 @@ export default function App() {
           ))}
         </div>
 
-        {/* FFmpeg command */}
         <div style={{ background: "#080808", border: `1px solid ${C.border}`, borderRadius: 4, padding: "10px 12px", marginBottom: 24, overflowX: "auto" }}>
           <code style={{ fontSize: 9, color: "#3A3A3A", letterSpacing: 0.3, whiteSpace: "pre" }}>
             {`-y -i input.mp4 -c:v copy -af "${buildFilterChain(params, ncLevel)}" output.mp4`}
@@ -569,37 +697,36 @@ export default function App() {
 
         {/* ── SAVE button ── */}
         {videoUrl && (
-          <button onClick={() => setShowSaveSheet(true)}
-            style={{ width: "100%", height: 56, background: C.orange, color: "#000", border: "none", borderRadius: 4, cursor: "pointer", fontSize: 14, fontWeight: 800, letterSpacing: 1.6, fontFamily: "monospace", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-            <span>⬇</span> SAVE TO GALLERY
-          </button>
+          <div>
+            {recordState === "idle" || recordState === "done" ? (
+              <button
+                onClick={saveToGallery}
+                style={{ width: "100%", height: 56, background: recordState === "done" ? C.green : C.orange, color: "#000", border: "none", borderRadius: 4, cursor: "pointer", fontSize: 14, fontWeight: 800, letterSpacing: 1.6, fontFamily: "monospace", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, transition: "background 0.2s" }}>
+                <span>{recordState === "done" ? "✓" : "⬇"}</span>
+                {recordState === "done" ? "SAVE AGAIN" : "SAVE TO GALLERY"}
+              </button>
+            ) : (
+              <button
+                onClick={cancelRecording}
+                style={{ width: "100%", height: 56, background: "transparent", color: "#888", border: "1px solid #333", borderRadius: 4, cursor: "pointer", fontSize: 13, fontWeight: 700, letterSpacing: 1.4, fontFamily: "monospace", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                ■ CANCEL RECORDING
+              </button>
+            )}
+            {recordState === "idle" && (
+              <div style={{ marginTop: 8, fontSize: 9, color: "#383838", textAlign: "center", letterSpacing: 0.5 }}>
+                Plays video in real-time and exports enhanced audio as .webm — best on Chrome/Edge
+              </div>
+            )}
+          </div>
         )}
       </div>
 
-      {/* ── Save sheet ── */}
-      {showSaveSheet && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 100 }} onClick={() => setShowSaveSheet(false)}>
-          <div onClick={e => e.stopPropagation()} style={{ background: "#111", width: "100%", maxWidth: 480, borderRadius: "12px 12px 0 0", padding: "24px 24px 40px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-              <span style={{ fontSize: 18 }}>📱</span>
-              <span style={{ fontSize: 13, fontWeight: 800, letterSpacing: 2, color: C.orange, fontFamily: "monospace" }}>SAVE WITH ANDROID APP</span>
-            </div>
-            <p style={{ color: "#999", lineHeight: 1.6, fontSize: 13, marginBottom: 14 }}>
-              The web preview lets you hear live A/B audio comparison — saving a processed video requires the <b style={{ color: "#CCC" }}>ExhaustStudio 650 Android app</b> which runs the full FFmpeg pipeline.
-            </p>
-            <div style={{ background: "#080808", border: `1px solid ${C.border}`, borderRadius: 6, padding: "12px 14px", marginBottom: 20 }}>
-              <div style={{ fontSize: 9, color: C.mid, letterSpacing: 1.5, marginBottom: 8 }}>CURRENT SETTINGS WILL EXPORT AS</div>
-              <code style={{ fontSize: 9, color: "#555", lineHeight: 1.7, display: "block", wordBreak: "break-all" }}>
-                {buildFilterChain(params, ncLevel)}
-              </code>
-            </div>
-            <button onClick={() => setShowSaveSheet(false)}
-              style={{ width: "100%", padding: "14px", background: C.orange, border: "none", borderRadius: 4, color: "#000", fontFamily: "monospace", fontSize: 13, fontWeight: 800, letterSpacing: 1.5, cursor: "pointer" }}>
-              GOT IT
-            </button>
-          </div>
-        </div>
-      )}
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.4; transform: scale(1.4); }
+        }
+      `}</style>
     </>
   );
 }

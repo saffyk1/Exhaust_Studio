@@ -47,3 +47,14 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Flutter / Android build artifacts
+**/.dart_tool/
+**/build/
+**/.flutter-plugins-dependencies
+**/.flutter-plugins
+**/android/.kotlin/
+**/android/.gradle/
+**/ios/.symlinks/
+**/.idea/
+**/*.iml

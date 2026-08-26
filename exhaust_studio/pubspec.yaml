@@ -10,7 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
 
-  image_picker: ^1.1.2
+  file_picker: ^8.0.0
   video_player: ^2.9.1
   ffmpeg_kit_flutter_new: ^4.2.1
   permission_handler: ^11.3.1

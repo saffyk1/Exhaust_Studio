@@ -1,0 +1,21 @@
+{
+  "_comment": "Seed template for a new project's .ai_ide_permissions.json. Copied in once by open_project() when a project has no permissions file of its own yet -- editing the PROJECT's own copy afterward is what actually takes effect; this global file is only the starting point for new/unconfigured projects. See backend/project_permissions.py for the enforcement logic and rule precedence.",
+  "read_write": ["playground/**", "log/**"],
+  "read_only": ["**"],
+  "no_access": ["**/.env", "**/*secret*", "**/*credential*"],
+  "terminal": {
+    "_comment_deny": "Dangerous command denylist — hard-blocked in ALL modes, never queued for approval.",
+    "deny": [
+      "rm -rf *", "rm -r /*", "del /f /q*", "del /s /q*",
+      "format*", "mkfs*",
+      "shutdown /s*", "taskkill /im explorer.exe*",
+      "rd /s /q*", "rmdir /s /q*"
+    ],
+    "_comment_reads": "Read-only query commands — auto-run even when Terminal writes are OFF (cannot cause harm). Everything else that isn't denied flows through the approval layer.",
+    "read_cmds": [
+      "dir*", "ls*", "type*", "cat*", "tree*",
+      "findstr*", "grep*", "wc*", "head*", "tail*",
+      "python -c \"lines=open(*)", "python -c 'lines=open(*)"
+    ]
+  }
+}

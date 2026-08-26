@@ -21,21 +21,23 @@ import 'package:ffmpeg_kit_flutter_new/log.dart' as fflog;
 class WaveformScreen extends StatefulWidget {
   final String inputPath;
   final String outputPath;
-  final String ffmpegCommand;
+  final String filterChain;
 
   /// Called when the user taps "Save to Gallery" after previewing.
   final VoidCallback onComplete;
 
   /// Called if FFmpeg exits with a non-zero return code.
   final void Function(String error) onError;
+  final void Function(String) onProcessed; // ← ADD THIS
 
   const WaveformScreen({
     super.key,
     required this.inputPath,
     required this.outputPath,
-    required this.ffmpegCommand,
+    required this.filterChain,
     required this.onComplete,
     required this.onError,
+    required this.onProcessed,
   });
 
   @override
@@ -137,16 +139,14 @@ class _WaveformScreenState extends State<WaveformScreen>
   }
 
   // ── Start FFmpeg session ───────────────────────────────────────────────────
-
   Future<void> _startSession() async {
-    await FFmpegKit.executeAsync(
-      widget.ffmpegCommand,
-      (session) async {
+    await FFmpegKit.executeWithArgumentsAsync(
+      ['-y', '-i', widget.inputPath, '-c:v', 'copy', '-af', widget.filterChain, widget.outputPath],
+          (session) async {
         final rc = await session.getReturnCode();
         if (!mounted) return;
-
         if (ReturnCode.isSuccess(rc)) {
-          // FFmpeg succeeded — initialise preview player before switching phase
+          widget.onProcessed(widget.outputPath);
           await _initPreview();
         } else {
           final logs = await session.getAllLogsAsString();
@@ -155,7 +155,7 @@ class _WaveformScreenState extends State<WaveformScreen>
           widget.onError(logs ?? 'Unknown FFmpeg error');
         }
       },
-      (log) => _onLog(log),
+          (log) => _onLog(log),
     );
   }
 

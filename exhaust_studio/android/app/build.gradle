@@ -17,7 +17,8 @@ def flutterVersionName = localProperties.getProperty("flutter.versionName") ?: "
 
 android {
     namespace "com.example.exhaust_studio"
-    compileSdk 35
+    ndkVersion = "28.2.13676358"
+    compileSdk 36
 
     sourceSets {
         main.java.srcDirs += "src/main/kotlin"

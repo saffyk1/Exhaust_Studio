@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <rect width="192" height="192" rx="32" fill="#111111"/>
+  <rect width="192" height="192" rx="32" fill="#FF6B00" opacity="0.12"/>
+  <text x="96" y="88" font-family="monospace" font-weight="900" font-size="44" fill="#FF6B00" text-anchor="middle" dominant-baseline="middle">EXH</text>
+  <text x="96" y="134" font-family="monospace" font-weight="700" font-size="28" fill="#FFAA00" text-anchor="middle" dominant-baseline="middle">650</text>
+  <rect x="32" y="108" width="128" height="2" rx="1" fill="#FF6B00" opacity="0.4"/>
+</svg>
